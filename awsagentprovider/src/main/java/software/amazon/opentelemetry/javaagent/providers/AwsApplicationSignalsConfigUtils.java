@@ -74,6 +74,9 @@ public final class AwsApplicationSignalsConfigUtils {
    *
    * <p>NOTE: ** indicates that the environment variable must exactly match this value or must not
    * be set at all.
+   *
+   * <p>An explicit Authorization header selects bearer authentication (a CloudWatch Logs API key)
+   * and takes precedence over SigV4.
    */
   static boolean isSigV4EnabledLogs(ConfigProperties config) {
     String logsEndpoint = config.getString(OTEL_EXPORTER_OTLP_LOGS_ENDPOINT);
@@ -111,6 +114,12 @@ public final class AwsApplicationSignalsConfigUtils {
       return false;
     }
 
+    if (hasExplicitAuthorizationHeader(config, OTEL_EXPORTER_OTLP_LOGS_HEADERS)) {
+      logger.info(
+          "Detected an explicit OTLP logs Authorization header; preserving configured authentication instead of applying SigV4.");
+      return false;
+    }
+
     return true;
   }
 
@@ -143,7 +152,7 @@ public final class AwsApplicationSignalsConfigUtils {
       return false;
     }
 
-    if (hasExplicitMetricsAuthorizationHeader(config)) {
+    if (hasExplicitAuthorizationHeader(config, OTEL_EXPORTER_OTLP_METRICS_HEADERS)) {
       logger.info(
           "Detected an explicit OTLP metrics Authorization header; preserving configured authentication instead of applying SigV4.");
       return false;
@@ -157,8 +166,21 @@ public final class AwsApplicationSignalsConfigUtils {
         config.getString(OTEL_EXPORTER_OTLP_METRICS_ENDPOINT), AWS_OTLP_METRICS_ENDPOINT_PATTERN);
   }
 
-  static boolean hasExplicitMetricsAuthorizationHeader(ConfigProperties config) {
-    Map<String, String> headers = config.getMap(OTEL_EXPORTER_OTLP_METRICS_HEADERS);
+  /**
+   * Does the effective configuration for the given signal contain an explicit {@code Authorization}
+   * header?
+   *
+   * <p>An explicit {@code Authorization} header means the user selected their own authentication
+   * mode, typically a CloudWatch API key (bearer token). In that case ADOT must not also apply
+   * SigV4: upstream includes values from both constant headers and the header supplier, so the
+   * request would carry two {@code Authorization} values and neither mode would cleanly apply.
+   *
+   * <p>The effective header map follows upstream OpenTelemetry precedence: a non-empty
+   * signal-specific map is used, otherwise the global map. The maps are selected, not merged.
+   * Matching is case-insensitive because header names are case-insensitive.
+   */
+  static boolean hasExplicitAuthorizationHeader(ConfigProperties config, String signalHeadersKey) {
+    Map<String, String> headers = config.getMap(signalHeadersKey);
     if (headers.isEmpty()) {
       headers = config.getMap(OTEL_EXPORTER_OTLP_HEADERS);
     }
@@ -177,19 +199,33 @@ public final class AwsApplicationSignalsConfigUtils {
    *
    * <p>NOTE: ** indicates that the environment variable must exactly match this value or must not
    * be set at all.
+   *
+   * <p>An explicit Authorization header takes precedence over SigV4. The X-Ray OTLP endpoint
+   * currently documents SigV4 only, so this path is primarily for forward compatibility and to
+   * avoid silently overriding explicit user configuration.
    */
   static boolean isSigV4EnabledTraces(ConfigProperties config) {
     String tracesEndpoint = config.getString(OTEL_EXPORTER_OTLP_TRACES_ENDPOINT);
     String tracesExporter = config.getString(OTEL_TRACES_EXPORTER);
     String tracesProtocol = config.getString(OTEL_EXPORTER_OTLP_TRACES_PROTOCOL);
 
-    return isSigv4ValidConfig(
+    if (!isSigv4ValidConfig(
         tracesEndpoint,
         AWS_OTLP_TRACES_ENDPOINT_PATTERN,
         OTEL_TRACES_EXPORTER,
         tracesExporter,
         OTEL_EXPORTER_OTLP_TRACES_PROTOCOL,
-        tracesProtocol);
+        tracesProtocol)) {
+      return false;
+    }
+
+    if (hasExplicitAuthorizationHeader(config, OTEL_EXPORTER_OTLP_TRACES_HEADERS)) {
+      logger.warning(
+          "Detected an explicit OTLP traces Authorization header; preserving configured authentication instead of applying SigV4. Note that the X-Ray OTLP endpoint currently documents SigV4 authentication only.");
+      return false;
+    }
+
+    return true;
   }
 
   private static boolean endpointMatches(String endpoint, String endpointPattern) {

@@ -169,6 +169,7 @@ public final class AwsApplicationSignalsCustomizerProvider
   private static final String OTEL_TRACES_SAMPLER_ARG = "otel.traces.sampler.arg";
   static final String OTEL_EXPORTER_OTLP_LOGS_HEADERS = "otel.exporter.otlp.logs.headers";
   static final String OTEL_EXPORTER_OTLP_METRICS_HEADERS = "otel.exporter.otlp.metrics.headers";
+  static final String OTEL_EXPORTER_OTLP_TRACES_HEADERS = "otel.exporter.otlp.traces.headers";
   static final String OTEL_EXPORTER_OTLP_HEADERS = "otel.exporter.otlp.headers";
   private static final String OTEL_EXPORTER_OTLP_COMPRESSION_CONFIG =
       "otel.exporter.otlp.compression";

@@ -239,6 +239,57 @@ class AwsApplicationSignalsCustomizerProviderTest {
   }
 
   @Test
+  void testShouldPreserveSignalSpecificTracesAuthorizationHeader() {
+    customizeExporterTest(
+        Map.of(
+            OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+            "https://xray.us-east-1.amazonaws.com/v1/traces",
+            OTEL_EXPORTER_OTLP_TRACES_PROTOCOL,
+            "http/protobuf",
+            OTEL_EXPORTER_OTLP_TRACES_HEADERS,
+            "Authorization=Bearer%20traces-token",
+            OTEL_TRACES_EXPORTER,
+            "otlp"),
+        defaultHttpSpanExporter,
+        this.provider::customizeSpanExporter,
+        OtlpHttpSpanExporter.class);
+  }
+
+  @Test
+  void testShouldPreserveGlobalAuthorizationHeaderForTraces() {
+    customizeExporterTest(
+        Map.of(
+            OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+            "https://xray.us-east-1.amazonaws.com/v1/traces",
+            OTEL_EXPORTER_OTLP_TRACES_PROTOCOL,
+            "http/protobuf",
+            OTEL_EXPORTER_OTLP_HEADERS,
+            "authorization=Bearer%20global-token",
+            OTEL_TRACES_EXPORTER,
+            "otlp"),
+        defaultHttpSpanExporter,
+        this.provider::customizeSpanExporter,
+        OtlpHttpSpanExporter.class);
+  }
+
+  @Test
+  void testShouldPreserveLogsAuthorizationHeader() {
+    customizeExporterTest(
+        Map.of(
+            OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
+            "https://logs.us-east-1.amazonaws.com/v1/logs",
+            OTEL_EXPORTER_OTLP_LOGS_PROTOCOL,
+            "http/protobuf",
+            OTEL_EXPORTER_OTLP_LOGS_HEADERS,
+            "Authorization=Bearer%20logs-token,x-aws-log-group=test1,x-aws-log-stream=test2",
+            OTEL_LOGS_EXPORTER,
+            "otlp"),
+        defaultHttpLogsExporter,
+        this.provider::customizeLogsExporter,
+        OtlpHttpLogRecordExporter.class);
+  }
+
+  @Test
   void testShouldEnableSigV4MetricsExporterIfConfigIsCorrect() {
     customizeExporterTest(
         Map.of(
