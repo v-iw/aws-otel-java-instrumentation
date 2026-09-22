@@ -30,6 +30,7 @@ import io.opentelemetry.exporter.otlp.http.logs.OtlpHttpLogRecordExporter;
 import io.opentelemetry.exporter.otlp.http.metrics.OtlpHttpMetricExporter;
 import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporter;
 import io.opentelemetry.exporter.otlp.logs.OtlpGrpcLogRecordExporter;
+import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter;
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.autoconfigure.spi.ConfigProperties;
 import io.opentelemetry.sdk.autoconfigure.spi.internal.DefaultConfigProperties;
@@ -46,6 +47,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiFunction;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import java.util.stream.Stream;
@@ -59,6 +63,7 @@ import software.amazon.opentelemetry.javaagent.providers.exporter.aws.logs.Compa
 import software.amazon.opentelemetry.javaagent.providers.exporter.aws.metrics.AwsCloudWatchEmfExporter;
 import software.amazon.opentelemetry.javaagent.providers.exporter.aws.metrics.ConsoleEmfExporter;
 import software.amazon.opentelemetry.javaagent.providers.exporter.otlp.aws.logs.OtlpAwsLogRecordExporter;
+import software.amazon.opentelemetry.javaagent.providers.exporter.otlp.aws.metrics.OtlpAwsMetricExporter;
 import software.amazon.opentelemetry.javaagent.providers.exporter.otlp.aws.traces.OtlpAwsSpanExporter;
 
 class AwsApplicationSignalsCustomizerProviderTest {
@@ -231,6 +236,162 @@ class AwsApplicationSignalsCustomizerProviderTest {
         OtlpGrpcLogRecordExporter.getDefault(),
         this.provider::customizeLogsExporter,
         OtlpGrpcLogRecordExporter.class);
+  }
+
+  @Test
+  void testShouldEnableSigV4MetricsExporterIfConfigIsCorrect() {
+    customizeExporterTest(
+        Map.of(
+            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+            "https://monitoring.us-east-1.amazonaws.com/v1/metrics",
+            OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
+            "http/protobuf",
+            OTEL_METRICS_EXPORTER,
+            "otlp"),
+        defaultHttpMetricsExporter,
+        this.provider::customizeMetricExporter,
+        OtlpAwsMetricExporter.class);
+  }
+
+  @Test
+  void testShouldNotUseSigV4MetricsExporterForInvalidConfig() {
+    customizeExporterTest(
+        Map.of(
+            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+            "http://monitoring.us-east-1.amazonaws.com/v1/metrics",
+            OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
+            "http/protobuf",
+            OTEL_METRICS_EXPORTER,
+            "otlp"),
+        defaultHttpMetricsExporter,
+        this.provider::customizeMetricExporter,
+        OtlpHttpMetricExporter.class);
+  }
+
+  @Test
+  void testShouldPassThroughNonHttpMetricsExporterWhenSigV4Enabled() {
+    customizeExporterTest(
+        Map.of(
+            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+            "https://monitoring.us-east-1.amazonaws.com/v1/metrics",
+            OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
+            "http/protobuf",
+            OTEL_METRICS_EXPORTER,
+            "otlp"),
+        OtlpGrpcMetricExporter.getDefault(),
+        this.provider::customizeMetricExporter,
+        OtlpGrpcMetricExporter.class);
+  }
+
+  @Test
+  void testShouldPreserveSignalSpecificMetricsAuthorizationHeader() {
+    customizeExporterTest(
+        Map.of(
+            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+            "https://monitoring.us-east-1.amazonaws.com/v1/metrics",
+            OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
+            "http/protobuf",
+            OTEL_EXPORTER_OTLP_METRICS_HEADERS,
+            "Authorization=Bearer%20metrics-token",
+            OTEL_METRICS_EXPORTER,
+            "otlp"),
+        defaultHttpMetricsExporter,
+        this.provider::customizeMetricExporter,
+        OtlpHttpMetricExporter.class);
+  }
+
+  @Test
+  void testShouldPreserveGlobalAuthorizationHeaderWhenMetricsHeadersAreAbsent() {
+    customizeExporterTest(
+        Map.of(
+            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+            "https://monitoring.us-east-1.amazonaws.com/v1/metrics",
+            OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
+            "http/protobuf",
+            OTEL_EXPORTER_OTLP_HEADERS,
+            "authorization=Bearer%20global-token",
+            OTEL_METRICS_EXPORTER,
+            "otlp"),
+        defaultHttpMetricsExporter,
+        this.provider::customizeMetricExporter,
+        OtlpHttpMetricExporter.class);
+  }
+
+  @Test
+  void testSignalSpecificMetricsHeadersOverrideGlobalAuthorizationHeader() {
+    customizeExporterTest(
+        Map.of(
+            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+            "https://monitoring.us-east-1.amazonaws.com/v1/metrics",
+            OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
+            "http/protobuf",
+            OTEL_EXPORTER_OTLP_METRICS_HEADERS,
+            "x-test=value",
+            OTEL_EXPORTER_OTLP_HEADERS,
+            "Authorization=Bearer%20global-token",
+            OTEL_METRICS_EXPORTER,
+            "otlp"),
+        defaultHttpMetricsExporter,
+        this.provider::customizeMetricExporter,
+        OtlpAwsMetricExporter.class);
+  }
+
+  @Test
+  void testApplicationSignalsPreservesExplicitOtlpMetricsExporter() {
+    Map<String, String> overrides =
+        this.provider.customizeProperties(
+            DefaultConfigProperties.createFromMap(
+                Map.of(
+                    APPLICATION_SIGNALS_ENABLED_CONFIG,
+                    "true",
+                    OTEL_METRICS_EXPORTER,
+                    "otlp",
+                    OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+                    "https://monitoring.us-east-1.amazonaws.com/v1/metrics")));
+
+    assertFalse(overrides.containsKey(OTEL_METRICS_EXPORTER));
+  }
+
+  @Test
+  void testApplicationSignalsWarnsWhenCloudWatchMetricsExporterDefaultsToNone() {
+    Logger customizerLogger =
+        Logger.getLogger(AwsApplicationSignalsCustomizerProvider.class.getName());
+    List<LogRecord> logRecords = new ArrayList<>();
+    Handler handler =
+        new Handler() {
+          @Override
+          public void publish(LogRecord record) {
+            logRecords.add(record);
+          }
+
+          @Override
+          public void flush() {}
+
+          @Override
+          public void close() {}
+        };
+    customizerLogger.addHandler(handler);
+    try {
+      Map<String, String> overrides =
+          this.provider.customizeProperties(
+              DefaultConfigProperties.createFromMap(
+                  Map.of(
+                      APPLICATION_SIGNALS_ENABLED_CONFIG,
+                      "true",
+                      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+                      "https://monitoring.us-east-1.amazonaws.com/v1/metrics")));
+
+      assertEquals("none", overrides.get(OTEL_METRICS_EXPORTER));
+      assertTrue(
+          logRecords.stream()
+              .anyMatch(
+                  record ->
+                      record
+                          .getMessage()
+                          .contains("Set OTEL_METRICS_EXPORTER=otlp to enable collector-less")));
+    } finally {
+      customizerLogger.removeHandler(handler);
+    }
   }
 
   @Test

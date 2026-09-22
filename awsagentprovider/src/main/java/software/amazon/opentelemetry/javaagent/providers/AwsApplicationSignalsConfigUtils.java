@@ -115,6 +115,57 @@ public final class AwsApplicationSignalsConfigUtils {
   }
 
   /**
+   * Is the given configuration correct to enable SigV4 for Metrics?
+   *
+   * <ul>
+   *   <li><code>OTEL_EXPORTER_OTLP_METRICS_ENDPOINT</code>
+   *       =https://monitoring.[AWS-REGION].amazonaws.com/v1/metrics
+   *   <li><code>OTEL_EXPORTER_OTLP_METRICS_PROTOCOL</code>=http/protobuf **
+   *   <li><code>OTEL_METRICS_EXPORTER</code>=otlp **
+   * </ul>
+   *
+   * <p>An explicit Authorization header selects bearer authentication and takes precedence over
+   * SigV4. Signal-specific headers take precedence over global OTLP headers, matching upstream
+   * OpenTelemetry configuration.
+   */
+  static boolean isSigV4EnabledMetrics(ConfigProperties config) {
+    String metricsEndpoint = config.getString(OTEL_EXPORTER_OTLP_METRICS_ENDPOINT);
+    String metricsExporter = config.getString(OTEL_METRICS_EXPORTER);
+    String metricsProtocol = config.getString(OTEL_EXPORTER_OTLP_METRICS_PROTOCOL);
+
+    if (!isSigv4ValidConfig(
+        metricsEndpoint,
+        AWS_OTLP_METRICS_ENDPOINT_PATTERN,
+        OTEL_METRICS_EXPORTER,
+        metricsExporter,
+        OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
+        metricsProtocol)) {
+      return false;
+    }
+
+    if (hasExplicitMetricsAuthorizationHeader(config)) {
+      logger.info(
+          "Detected an explicit OTLP metrics Authorization header; preserving configured authentication instead of applying SigV4.");
+      return false;
+    }
+
+    return true;
+  }
+
+  static boolean isAwsOtlpMetricsEndpoint(ConfigProperties config) {
+    return endpointMatches(
+        config.getString(OTEL_EXPORTER_OTLP_METRICS_ENDPOINT), AWS_OTLP_METRICS_ENDPOINT_PATTERN);
+  }
+
+  static boolean hasExplicitMetricsAuthorizationHeader(ConfigProperties config) {
+    Map<String, String> headers = config.getMap(OTEL_EXPORTER_OTLP_METRICS_HEADERS);
+    if (headers.isEmpty()) {
+      headers = config.getMap(OTEL_EXPORTER_OTLP_HEADERS);
+    }
+    return headers.keySet().stream().anyMatch("authorization"::equalsIgnoreCase);
+  }
+
+  /**
    * Is the given configuration correct to enable SigV4 for Traces?
    *
    * <ul>
@@ -141,6 +192,11 @@ public final class AwsApplicationSignalsConfigUtils {
         tracesProtocol);
   }
 
+  private static boolean endpointMatches(String endpoint, String endpointPattern) {
+    return endpoint != null
+        && Pattern.compile(endpointPattern).matcher(endpoint.toLowerCase()).matches();
+  }
+
   /**
    * Determines if the required configurations for the signal type is correct. These environment
    * variables must exactly match this value or must not be set at all.
@@ -160,9 +216,7 @@ public final class AwsApplicationSignalsConfigUtils {
       String protocol) {
     boolean isValidOtlpEndpoint;
     try {
-      isValidOtlpEndpoint =
-          endpoint != null
-              && Pattern.compile(endpointPattern).matcher(endpoint.toLowerCase()).matches();
+      isValidOtlpEndpoint = endpointMatches(endpoint, endpointPattern);
 
       if (isValidOtlpEndpoint) {
         logger.log(Level.INFO, String.format("Detected using AWS OTLP Endpoint: %s.", endpoint));
