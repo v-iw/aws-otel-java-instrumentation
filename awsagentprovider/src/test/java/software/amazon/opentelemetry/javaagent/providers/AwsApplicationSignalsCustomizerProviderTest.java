@@ -255,8 +255,12 @@ class AwsApplicationSignalsCustomizerProviderTest {
         OtlpHttpSpanExporter.class);
   }
 
+  /**
+   * A global Authorization header is not a statement about the X-Ray endpoint, so it must not
+   * disable SigV4. Only OTEL_EXPORTER_OTLP_TRACES_HEADERS selects bearer authentication.
+   */
   @Test
-  void testShouldPreserveGlobalAuthorizationHeaderForTraces() {
+  void testShouldIgnoreGlobalAuthorizationHeaderForTraces() {
     customizeExporterTest(
         Map.of(
             OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
@@ -269,7 +273,7 @@ class AwsApplicationSignalsCustomizerProviderTest {
             "otlp"),
         defaultHttpSpanExporter,
         this.provider::customizeSpanExporter,
-        OtlpHttpSpanExporter.class);
+        OtlpAwsSpanExporter.class);
   }
 
   @Test
@@ -351,8 +355,15 @@ class AwsApplicationSignalsCustomizerProviderTest {
         OtlpHttpMetricExporter.class);
   }
 
+  /**
+   * A global Authorization header is not a statement about the CloudWatch metrics endpoint, so it
+   * must not disable SigV4. Only OTEL_EXPORTER_OTLP_METRICS_HEADERS selects bearer authentication.
+   *
+   * <p>Accepted consequence: upstream still attaches the global header to the exporter, so this
+   * configuration sends two Authorization values. Out of scope for this change.
+   */
   @Test
-  void testShouldPreserveGlobalAuthorizationHeaderWhenMetricsHeadersAreAbsent() {
+  void testShouldIgnoreGlobalAuthorizationHeaderForMetrics() {
     customizeExporterTest(
         Map.of(
             OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
@@ -365,11 +376,15 @@ class AwsApplicationSignalsCustomizerProviderTest {
             "otlp"),
         defaultHttpMetricsExporter,
         this.provider::customizeMetricExporter,
-        OtlpHttpMetricExporter.class);
+        OtlpAwsMetricExporter.class);
   }
 
+  /**
+   * Signal-specific headers without an Authorization entry still get SigV4, even when a global
+   * Authorization exists.
+   */
   @Test
-  void testSignalSpecificMetricsHeadersOverrideGlobalAuthorizationHeader() {
+  void testSignalSpecificMetricsHeadersWithoutAuthorizationStillUseSigV4() {
     customizeExporterTest(
         Map.of(
             OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,

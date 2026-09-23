@@ -133,9 +133,9 @@ public final class AwsApplicationSignalsConfigUtils {
    *   <li><code>OTEL_METRICS_EXPORTER</code>=otlp **
    * </ul>
    *
-   * <p>An explicit Authorization header selects bearer authentication and takes precedence over
-   * SigV4. Signal-specific headers take precedence over global OTLP headers, matching upstream
-   * OpenTelemetry configuration.
+   * <p>An explicit Authorization header in {@code OTEL_EXPORTER_OTLP_METRICS_HEADERS} selects
+   * bearer authentication and takes precedence over SigV4. The global {@code
+   * OTEL_EXPORTER_OTLP_HEADERS} is not considered; see {@link #hasExplicitAuthorizationHeader}.
    */
   static boolean isSigV4EnabledMetrics(ConfigProperties config) {
     String metricsEndpoint = config.getString(OTEL_EXPORTER_OTLP_METRICS_ENDPOINT);
@@ -175,16 +175,22 @@ public final class AwsApplicationSignalsConfigUtils {
    * SigV4: upstream includes values from both constant headers and the header supplier, so the
    * request would carry two {@code Authorization} values and neither mode would cleanly apply.
    *
-   * <p>The effective header map follows upstream OpenTelemetry precedence: a non-empty
-   * signal-specific map is used, otherwise the global map. The maps are selected, not merged.
-   * Matching is case-insensitive because header names are case-insensitive.
+   * <p>Only the signal-specific header map is consulted. The global {@code
+   * OTEL_EXPORTER_OTLP_HEADERS} is deliberately <strong>not</strong> considered: a global {@code
+   * Authorization} is not a statement about this signal's AWS endpoint, so it must not silently
+   * disable SigV4. Selecting bearer authentication for an AWS endpoint requires the signal-specific
+   * variable.
+   *
+   * <p>Known consequence, accepted: upstream falls back to the global map when the signal-specific
+   * map is empty, so a global-only {@code Authorization} still reaches the exporter as a constant
+   * header while SigV4 also applies, producing two {@code Authorization} values. Resolving that
+   * ambiguous configuration is out of scope here and is tracked as a follow-up.
+   *
+   * <p>Matching is case-insensitive because header names are case-insensitive.
    */
   static boolean hasExplicitAuthorizationHeader(ConfigProperties config, String signalHeadersKey) {
-    Map<String, String> headers = config.getMap(signalHeadersKey);
-    if (headers.isEmpty()) {
-      headers = config.getMap(OTEL_EXPORTER_OTLP_HEADERS);
-    }
-    return headers.keySet().stream().anyMatch("authorization"::equalsIgnoreCase);
+    return config.getMap(signalHeadersKey).keySet().stream()
+        .anyMatch("authorization"::equalsIgnoreCase);
   }
 
   /**
