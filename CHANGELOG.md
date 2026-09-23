@@ -13,6 +13,22 @@ If your change does not need a CHANGELOG entry, add the "skip changelog" label t
 
 ## Unreleased
 
+- feat: add SigV4 authentication for collector-less OTLP metrics export to the CloudWatch metrics
+  endpoint (`https://monitoring.<region>.amazonaws.com/v1/metrics`, SigV4 service `monitoring`),
+  matching the existing direct traces and logs behavior. Requires
+  `OTEL_METRICS_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/protobuf`, and
+  `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` set to the CloudWatch metrics endpoint. An explicitly
+  configured OTLP metrics `Authorization` header (bearer token) is preserved and takes precedence
+  over SigV4. Upstream metric settings, including temporality and aggregation, are unchanged.
+  ([#1455](https://github.com/aws-observability/aws-otel-java-instrumentation/pull/1455))
+- fix: an explicitly configured OTLP `Authorization` header (bearer token) now also takes precedence
+  over SigV4 for direct traces and logs export, matching the new metrics behavior. Previously both
+  values were sent on the same request. Only the signal-specific variable
+  (`OTEL_EXPORTER_OTLP_TRACES_HEADERS`, `OTEL_EXPORTER_OTLP_LOGS_HEADERS`,
+  `OTEL_EXPORTER_OTLP_METRICS_HEADERS`) selects bearer authentication; a global
+  `OTEL_EXPORTER_OTLP_HEADERS` does not disable SigV4.
+  ([#1455](https://github.com/aws-observability/aws-otel-java-instrumentation/pull/1455))
+
 ## v2.31.0 - 2026-09-17
 
 - Bump Netty to 4.1.137.Final to fix CVE-2026-59903 and CVE-2026-75595

@@ -74,6 +74,9 @@ public final class AwsApplicationSignalsConfigUtils {
    *
    * <p>NOTE: ** indicates that the environment variable must exactly match this value or must not
    * be set at all.
+   *
+   * <p>An explicit Authorization header selects bearer authentication (a CloudWatch Logs API key)
+   * and takes precedence over SigV4.
    */
   static boolean isSigV4EnabledLogs(ConfigProperties config) {
     String logsEndpoint = config.getString(OTEL_EXPORTER_OTLP_LOGS_ENDPOINT);
@@ -111,7 +114,83 @@ public final class AwsApplicationSignalsConfigUtils {
       return false;
     }
 
+    if (hasExplicitAuthorizationHeader(config, OTEL_EXPORTER_OTLP_LOGS_HEADERS)) {
+      logger.info(
+          "Detected an explicit OTLP logs Authorization header; preserving configured authentication instead of applying SigV4.");
+      return false;
+    }
+
     return true;
+  }
+
+  /**
+   * Is the given configuration correct to enable SigV4 for Metrics?
+   *
+   * <ul>
+   *   <li><code>OTEL_EXPORTER_OTLP_METRICS_ENDPOINT</code>
+   *       =https://monitoring.[AWS-REGION].amazonaws.com/v1/metrics
+   *   <li><code>OTEL_EXPORTER_OTLP_METRICS_PROTOCOL</code>=http/protobuf **
+   *   <li><code>OTEL_METRICS_EXPORTER</code>=otlp **
+   * </ul>
+   *
+   * <p>An explicit Authorization header in {@code OTEL_EXPORTER_OTLP_METRICS_HEADERS} selects
+   * bearer authentication and takes precedence over SigV4. The global {@code
+   * OTEL_EXPORTER_OTLP_HEADERS} is not considered; see {@link #hasExplicitAuthorizationHeader}.
+   */
+  static boolean isSigV4EnabledMetrics(ConfigProperties config) {
+    String metricsEndpoint = config.getString(OTEL_EXPORTER_OTLP_METRICS_ENDPOINT);
+    String metricsExporter = config.getString(OTEL_METRICS_EXPORTER);
+    String metricsProtocol = config.getString(OTEL_EXPORTER_OTLP_METRICS_PROTOCOL);
+
+    if (!isSigv4ValidConfig(
+        metricsEndpoint,
+        AWS_OTLP_METRICS_ENDPOINT_PATTERN,
+        OTEL_METRICS_EXPORTER,
+        metricsExporter,
+        OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
+        metricsProtocol)) {
+      return false;
+    }
+
+    if (hasExplicitAuthorizationHeader(config, OTEL_EXPORTER_OTLP_METRICS_HEADERS)) {
+      logger.info(
+          "Detected an explicit OTLP metrics Authorization header; preserving configured authentication instead of applying SigV4.");
+      return false;
+    }
+
+    return true;
+  }
+
+  static boolean isAwsOtlpMetricsEndpoint(ConfigProperties config) {
+    return endpointMatches(
+        config.getString(OTEL_EXPORTER_OTLP_METRICS_ENDPOINT), AWS_OTLP_METRICS_ENDPOINT_PATTERN);
+  }
+
+  /**
+   * Does the effective configuration for the given signal contain an explicit {@code Authorization}
+   * header?
+   *
+   * <p>An explicit {@code Authorization} header means the user selected their own authentication
+   * mode, typically a CloudWatch API key (bearer token). In that case ADOT must not also apply
+   * SigV4: upstream includes values from both constant headers and the header supplier, so the
+   * request would carry two {@code Authorization} values and neither mode would cleanly apply.
+   *
+   * <p>Only the signal-specific header map is consulted. The global {@code
+   * OTEL_EXPORTER_OTLP_HEADERS} is deliberately <strong>not</strong> considered: a global {@code
+   * Authorization} is not a statement about this signal's AWS endpoint, so it must not silently
+   * disable SigV4. Selecting bearer authentication for an AWS endpoint requires the signal-specific
+   * variable.
+   *
+   * <p>Known consequence, accepted: upstream falls back to the global map when the signal-specific
+   * map is empty, so a global-only {@code Authorization} still reaches the exporter as a constant
+   * header while SigV4 also applies, producing two {@code Authorization} values. Resolving that
+   * ambiguous configuration is out of scope here and is tracked as a follow-up.
+   *
+   * <p>Matching is case-insensitive because header names are case-insensitive.
+   */
+  static boolean hasExplicitAuthorizationHeader(ConfigProperties config, String signalHeadersKey) {
+    return config.getMap(signalHeadersKey).keySet().stream()
+        .anyMatch("authorization"::equalsIgnoreCase);
   }
 
   /**
@@ -126,19 +205,38 @@ public final class AwsApplicationSignalsConfigUtils {
    *
    * <p>NOTE: ** indicates that the environment variable must exactly match this value or must not
    * be set at all.
+   *
+   * <p>An explicit Authorization header takes precedence over SigV4. The X-Ray OTLP endpoint
+   * currently documents SigV4 only, so this path is primarily for forward compatibility and to
+   * avoid silently overriding explicit user configuration.
    */
   static boolean isSigV4EnabledTraces(ConfigProperties config) {
     String tracesEndpoint = config.getString(OTEL_EXPORTER_OTLP_TRACES_ENDPOINT);
     String tracesExporter = config.getString(OTEL_TRACES_EXPORTER);
     String tracesProtocol = config.getString(OTEL_EXPORTER_OTLP_TRACES_PROTOCOL);
 
-    return isSigv4ValidConfig(
+    if (!isSigv4ValidConfig(
         tracesEndpoint,
         AWS_OTLP_TRACES_ENDPOINT_PATTERN,
         OTEL_TRACES_EXPORTER,
         tracesExporter,
         OTEL_EXPORTER_OTLP_TRACES_PROTOCOL,
-        tracesProtocol);
+        tracesProtocol)) {
+      return false;
+    }
+
+    if (hasExplicitAuthorizationHeader(config, OTEL_EXPORTER_OTLP_TRACES_HEADERS)) {
+      logger.warning(
+          "Detected an explicit OTLP traces Authorization header; preserving configured authentication instead of applying SigV4. Note that the X-Ray OTLP endpoint currently documents SigV4 authentication only.");
+      return false;
+    }
+
+    return true;
+  }
+
+  private static boolean endpointMatches(String endpoint, String endpointPattern) {
+    return endpoint != null
+        && Pattern.compile(endpointPattern).matcher(endpoint.toLowerCase()).matches();
   }
 
   /**
@@ -160,9 +258,7 @@ public final class AwsApplicationSignalsConfigUtils {
       String protocol) {
     boolean isValidOtlpEndpoint;
     try {
-      isValidOtlpEndpoint =
-          endpoint != null
-              && Pattern.compile(endpointPattern).matcher(endpoint.toLowerCase()).matches();
+      isValidOtlpEndpoint = endpointMatches(endpoint, endpointPattern);
 
       if (isValidOtlpEndpoint) {
         logger.log(Level.INFO, String.format("Detected using AWS OTLP Endpoint: %s.", endpoint));

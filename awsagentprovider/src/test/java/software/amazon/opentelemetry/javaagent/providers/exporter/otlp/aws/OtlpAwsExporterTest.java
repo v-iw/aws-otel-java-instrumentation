@@ -21,10 +21,17 @@ import static org.mockito.Mockito.*;
 
 import io.opentelemetry.exporter.otlp.http.logs.OtlpHttpLogRecordExporter;
 import io.opentelemetry.exporter.otlp.http.logs.OtlpHttpLogRecordExporterBuilder;
+import io.opentelemetry.exporter.otlp.http.metrics.OtlpHttpMetricExporter;
+import io.opentelemetry.exporter.otlp.http.metrics.OtlpHttpMetricExporterBuilder;
 import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporter;
 import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporterBuilder;
 import io.opentelemetry.sdk.common.CompletableResultCode;
+import io.opentelemetry.sdk.common.export.MemoryMode;
 import io.opentelemetry.sdk.logs.export.LogRecordExporter;
+import io.opentelemetry.sdk.metrics.Aggregation;
+import io.opentelemetry.sdk.metrics.InstrumentType;
+import io.opentelemetry.sdk.metrics.data.AggregationTemporality;
+import io.opentelemetry.sdk.metrics.export.MetricExporter;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
 import java.net.URI;
 import java.util.List;
@@ -53,6 +60,8 @@ import software.amazon.awssdk.identity.spi.AwsCredentialsIdentity;
 import software.amazon.opentelemetry.javaagent.providers.exporter.otlp.aws.common.CompressionMethod;
 import software.amazon.opentelemetry.javaagent.providers.exporter.otlp.aws.logs.OtlpAwsLogRecordExporter;
 import software.amazon.opentelemetry.javaagent.providers.exporter.otlp.aws.logs.OtlpAwsLogRecordExporterBuilder;
+import software.amazon.opentelemetry.javaagent.providers.exporter.otlp.aws.metrics.OtlpAwsMetricExporter;
+import software.amazon.opentelemetry.javaagent.providers.exporter.otlp.aws.metrics.OtlpAwsMetricExporterBuilder;
 import software.amazon.opentelemetry.javaagent.providers.exporter.otlp.aws.traces.OtlpAwsSpanExporter;
 import software.amazon.opentelemetry.javaagent.providers.exporter.otlp.aws.traces.OtlpAwsSpanExporterBuilder;
 
@@ -345,6 +354,117 @@ abstract class AbstractOtlpAwsExporterTest {
         this.exporter =
             OtlpAwsLogRecordExporterBuilder.create(
                     mockExporter, OtlpAwsLogRecordExporterTest.LOGS_OTLP_ENDPOINT)
+                .build();
+      }
+
+      @Override
+      public void export() {
+        this.exporter.export(List.of());
+      }
+    }
+  }
+
+  static class OtlpAwsMetricExporterTest extends AbstractOtlpAwsExporterTest {
+    private static final String METRICS_OTLP_ENDPOINT =
+        "https://monitoring.us-east-1.amazonaws.com/v1/metrics";
+
+    @Mock private OtlpHttpMetricExporterBuilder mockBuilder;
+    @Mock private OtlpHttpMetricExporter mockExporter;
+
+    @BeforeEach
+    @Override
+    void setup() {
+      lenient().when(this.mockExporter.toBuilder()).thenReturn(mockBuilder);
+      lenient().when(this.mockBuilder.setEndpoint(any())).thenReturn(mockBuilder);
+      lenient()
+          .when(this.mockBuilder.setHeaders(this.headersCaptor.capture()))
+          .thenReturn(mockBuilder);
+      lenient().when(this.mockBuilder.build()).thenReturn(this.mockExporter);
+      OtlpAwsExporterTest tester = new MockOtlpAwsMetricExporterWrapper(this.mockExporter);
+      this.init(METRICS_OTLP_ENDPOINT, tester);
+      super.setup();
+      lenient().when(this.mockExporter.export(any())).thenReturn(CompletableResultCode.ofSuccess());
+    }
+
+    @Test
+    void testMetricsExporterUsesMonitoringSigningService() {
+      OtlpAwsMetricExporter exporter =
+          OtlpAwsMetricExporterBuilder.create(this.mockExporter, METRICS_OTLP_ENDPOINT).build();
+      assertEquals("monitoring", exporter.serviceName());
+    }
+
+    @Test
+    void testMetricsExporterCompressionDefaultsToNone() {
+      OtlpAwsMetricExporter exporter =
+          OtlpAwsMetricExporterBuilder.create(this.mockExporter, METRICS_OTLP_ENDPOINT).build();
+      assertEquals(CompressionMethod.NONE, exporter.getCompression());
+    }
+
+    @Test
+    void testMetricsExporterCompressionCanBeSetToGzip() {
+      OtlpAwsMetricExporter exporter =
+          OtlpAwsMetricExporterBuilder.create(this.mockExporter, METRICS_OTLP_ENDPOINT)
+              .setCompression("gzip")
+              .build();
+      assertEquals(CompressionMethod.GZIP, exporter.getCompression());
+    }
+
+    @Test
+    void testMetricsExporterCompressionIgnoresCaseForGzip() {
+      OtlpAwsMetricExporter exporter =
+          OtlpAwsMetricExporterBuilder.create(this.mockExporter, METRICS_OTLP_ENDPOINT)
+              .setCompression("GZIP")
+              .build();
+      assertEquals(CompressionMethod.GZIP, exporter.getCompression());
+    }
+
+    @Test
+    void testMetricsExporterCompressionDefaultsToNoneForUnknownValue() {
+      OtlpAwsMetricExporter exporter =
+          OtlpAwsMetricExporterBuilder.create(this.mockExporter, METRICS_OTLP_ENDPOINT)
+              .setCompression("unknown")
+              .build();
+      assertEquals(CompressionMethod.NONE, exporter.getCompression());
+    }
+
+    @Test
+    void testMetricsExporterDelegatesMetricSettings() {
+      Aggregation aggregation = Aggregation.sum();
+      when(this.mockExporter.getAggregationTemporality(InstrumentType.COUNTER))
+          .thenReturn(AggregationTemporality.DELTA);
+      when(this.mockExporter.getDefaultAggregation(InstrumentType.COUNTER)).thenReturn(aggregation);
+      when(this.mockExporter.getMemoryMode()).thenReturn(MemoryMode.REUSABLE_DATA);
+
+      OtlpAwsMetricExporter exporter =
+          OtlpAwsMetricExporterBuilder.create(this.mockExporter, METRICS_OTLP_ENDPOINT).build();
+
+      assertEquals(
+          AggregationTemporality.DELTA, exporter.getAggregationTemporality(InstrumentType.COUNTER));
+      assertSame(aggregation, exporter.getDefaultAggregation(InstrumentType.COUNTER));
+      assertEquals(MemoryMode.REUSABLE_DATA, exporter.getMemoryMode());
+    }
+
+    @Test
+    void testMetricsExporterDelegatesFlushAndShutdown() {
+      CompletableResultCode flushResult = CompletableResultCode.ofSuccess();
+      CompletableResultCode shutdownResult = CompletableResultCode.ofSuccess();
+      when(this.mockExporter.flush()).thenReturn(flushResult);
+      when(this.mockExporter.shutdown()).thenReturn(shutdownResult);
+
+      OtlpAwsMetricExporter exporter =
+          OtlpAwsMetricExporterBuilder.create(this.mockExporter, METRICS_OTLP_ENDPOINT).build();
+
+      assertSame(flushResult, exporter.flush());
+      assertSame(shutdownResult, exporter.shutdown());
+    }
+
+    private static final class MockOtlpAwsMetricExporterWrapper implements OtlpAwsExporterTest {
+      private final MetricExporter exporter;
+
+      private MockOtlpAwsMetricExporterWrapper(OtlpHttpMetricExporter mockExporter) {
+        this.exporter =
+            OtlpAwsMetricExporterBuilder.create(
+                    mockExporter, OtlpAwsMetricExporterTest.METRICS_OTLP_ENDPOINT)
                 .build();
       }
 
