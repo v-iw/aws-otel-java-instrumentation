@@ -58,6 +58,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.MockedStatic;
 import software.amazon.opentelemetry.javaagent.providers.exporter.aws.logs.CompactConsoleLogRecordExporter;
 import software.amazon.opentelemetry.javaagent.providers.exporter.aws.metrics.AwsCloudWatchEmfExporter;
@@ -308,19 +309,63 @@ class AwsApplicationSignalsCustomizerProviderTest {
         OtlpAwsMetricExporter.class);
   }
 
-  @Test
-  void testShouldNotUseSigV4MetricsExporterForInvalidConfig() {
+  @ParameterizedTest
+  @MethodSource("invalidSigv4MetricsConfigProvider")
+  void testShouldNotUseSigV4MetricsExporterForInvalidConfig(
+      Map<String, String> invalidSigv4Config) {
+    customizeExporterTest(
+        invalidSigv4Config,
+        defaultHttpMetricsExporter,
+        this.provider::customizeMetricExporter,
+        OtlpHttpMetricExporter.class);
+  }
+
+  /**
+   * Endpoint matching is case-insensitive: endpointMatches lowercases the endpoint before applying
+   * the pattern. This documents that behavior rather than assuming it.
+   *
+   * <p>Discovered while adding the invalid-endpoint provider above. Note that the logs suite lists
+   * the equivalent uppercase endpoints as invalid, but those cases pass only because their config
+   * omits OTEL_EXPORTER_OTLP_LOGS_HEADERS and the validator bails at the required-header check
+   * instead of the endpoint check.
+   */
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "https://MONITORING.us-east-1.amazonaws.com/v1/metrics",
+        "https://monitoring.US-EAST-1.amazonaws.com/v1/metrics",
+        "https://monitoring.us-east-1.amazonaws.com/V1/METRICS"
+      })
+  void testShouldEnableSigV4MetricsExporterForUppercaseEndpoint(String endpoint) {
     customizeExporterTest(
         Map.of(
             OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
-            "http://monitoring.us-east-1.amazonaws.com/v1/metrics",
+            endpoint,
             OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
             "http/protobuf",
             OTEL_METRICS_EXPORTER,
             "otlp"),
         defaultHttpMetricsExporter,
         this.provider::customizeMetricExporter,
-        OtlpHttpMetricExporter.class);
+        OtlpAwsMetricExporter.class);
+  }
+
+  @Test
+  void testShouldNotUseSigV4MetricsExporterIfValidatorThrows() {
+    try (MockedStatic<Pattern> ignored = mockStatic(Pattern.class)) {
+      when(Pattern.compile(any())).thenThrow(PatternSyntaxException.class);
+      customizeExporterTest(
+          Map.of(
+              OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+              "https://monitoring.us-east-1.amazonaws.com/v1/metrics",
+              OTEL_EXPORTER_OTLP_METRICS_PROTOCOL,
+              "http/protobuf",
+              OTEL_METRICS_EXPORTER,
+              "otlp"),
+          defaultHttpMetricsExporter,
+          this.provider::customizeMetricExporter,
+          OtlpHttpMetricExporter.class);
+    }
   }
 
   @Test
@@ -377,6 +422,30 @@ class AwsApplicationSignalsCustomizerProviderTest {
         defaultHttpMetricsExporter,
         this.provider::customizeMetricExporter,
         OtlpAwsMetricExporter.class);
+  }
+
+  /**
+   * A global Authorization header is not a statement about the CloudWatch Logs endpoint, so it must
+   * not disable SigV4. Only OTEL_EXPORTER_OTLP_LOGS_HEADERS selects bearer authentication. The
+   * required log group and stream headers stay in the signal-specific variable.
+   */
+  @Test
+  void testShouldIgnoreGlobalAuthorizationHeaderForLogs() {
+    customizeExporterTest(
+        Map.of(
+            OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
+            "https://logs.us-east-1.amazonaws.com/v1/logs",
+            OTEL_EXPORTER_OTLP_LOGS_PROTOCOL,
+            "http/protobuf",
+            OTEL_EXPORTER_OTLP_LOGS_HEADERS,
+            "x-aws-log-group=test1,x-aws-log-stream=test2",
+            OTEL_EXPORTER_OTLP_HEADERS,
+            "authorization=Bearer%20global-token",
+            OTEL_LOGS_EXPORTER,
+            "otlp"),
+        defaultHttpLogsExporter,
+        this.provider::customizeLogsExporter,
+        OtlpAwsLogRecordExporter.class);
   }
 
   /**
@@ -776,6 +845,70 @@ class AwsApplicationSignalsCustomizerProviderTest {
               OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, endpoint,
               OTEL_EXPORTER_OTLP_TRACES_PROTOCOL, "http/protobuf",
               OTEL_TRACES_EXPORTER, "otlp");
+
+      args.add(badEndpoint);
+    }
+
+    args.add(consoleExporter);
+    args.add(invalidProtocol);
+
+    return args.stream().map(Arguments::of);
+  }
+
+  static Stream<Arguments> invalidSigv4MetricsConfigProvider() {
+    List<Map<String, String>> args = new ArrayList<>();
+    String[] metricsBadEndpoints = {
+      "http://localhost:4318/v1/metrics",
+      "http://monitoring.us-east-1.amazonaws.com/v1/metrics",
+      "ftp://monitoring.us-east-1.amazonaws.com/v1/metrics",
+      "https://monitor.us-east-1.amazonaws.com/v1/metrics",
+      "https://monitoring-.us-east-1.amazonaws.com/v1/metrics",
+      "https://cloudwatch.us-east-1.amazonaws.com/v1/metrics",
+      "https://metrics.us-east-1.amazonaws.com/v1/metrics",
+      "https://monitoring.amazonaws.com/v1/metrics",
+      "https://monitoring.us-east-1.amazon.com/v1/metrics",
+      "https://monitoring.us-east-1.aws.com/v1/metrics",
+      "https://monitoring.us_east_1.amazonaws.com/v1/metrics",
+      "https://monitoring.us.east.1.amazonaws.com/v1/metrics",
+      "https://monitoring..amazonaws.com/v1/metrics",
+      "https://monitoring.us-east-1.amazonaws.com/metrics",
+      "https://monitoring.us-east-1.amazonaws.com/v2/metrics",
+      "https://monitoring.us-east-1.amazonaws.com/v1/metric",
+      "https://monitoring.us-east-1.amazonaws.com/v1/metrics/",
+      "https://monitoring.us-east-1.amazonaws.com//v1/metrics",
+      "https://monitoring.us-east-1.amazonaws.com/v1//metrics",
+      "https://monitoring.us-east-1.amazonaws.com/v1/metrics?param=value",
+      "https://monitoring.us-east-1.amazonaws.com/v1/metrics#fragment",
+      "https://monitoring.us-east-1.amazonaws.com:443/v1/metrics",
+      "https:/monitoring.us-east-1.amazonaws.com/v1/metrics",
+      "https:://monitoring.us-east-1.amazonaws.com/v1/metrics",
+      "https://monitoring.us-east-1.amazonaws.com/v1/cloudwatchmetrics",
+      "https://monitoring.us-east-1.amazonaws.com/v1/cwmetrics",
+      // NOTE: uppercase variants are deliberately absent. endpointMatches lowercases the endpoint
+      // before matching, so they are VALID. See
+      // testShouldEnableSigV4MetricsExporterForUppercaseEndpoint.
+    };
+
+    Map<String, String> invalidProtocol =
+        Map.of(
+            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+                "https://monitoring.us-east-1.amazonaws.com/v1/metrics",
+            OTEL_EXPORTER_OTLP_METRICS_PROTOCOL, "grpc",
+            OTEL_METRICS_EXPORTER, "otlp");
+
+    Map<String, String> consoleExporter =
+        Map.of(
+            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+                "https://monitoring.us-east-1.amazonaws.com/v1/metrics",
+            OTEL_EXPORTER_OTLP_METRICS_PROTOCOL, "http/protobuf",
+            OTEL_METRICS_EXPORTER, "console");
+
+    for (String endpoint : metricsBadEndpoints) {
+      Map<String, String> badEndpoint =
+          Map.of(
+              OTEL_EXPORTER_OTLP_METRICS_ENDPOINT, endpoint,
+              OTEL_EXPORTER_OTLP_METRICS_PROTOCOL, "http/protobuf",
+              OTEL_METRICS_EXPORTER, "otlp");
 
       args.add(badEndpoint);
     }
