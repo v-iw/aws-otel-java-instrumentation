@@ -13,6 +13,8 @@ If your change does not need a CHANGELOG entry, add the "skip changelog" label t
 
 ## Unreleased
 
+- feat: add INFO logs identifying the selected metrics exporter, destination, and authentication
+  mode for CloudWatch EMF, console EMF, and direct CloudWatch OTLP metrics export.
 - feat: add SigV4 authentication for collector-less OTLP metrics export to the CloudWatch metrics
   endpoint (`https://monitoring.<region>.amazonaws.com/v1/metrics`, SigV4 service `monitoring`),
   matching the existing direct traces and logs behavior. Requires
